@@ -1,0 +1,60 @@
+# DocuMind AI — local single-user deployment.
+#   cp .env.example .env    # then edit secrets if needed
+#   docker compose up --build
+# Frontend: http://localhost:8080   API docs: http://localhost:8080/api/v1/docs
+name: documind
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-documind}
+      POSTGRES_USER: ${POSTGRES_USER:-documind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        INSTALL_ML: ${INSTALL_ML:-true}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DOCUMIND_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-documind}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-documind}
+      DOCUMIND_CORS_ORIGINS: ${DOCUMIND_CORS_ORIGINS:-http://localhost:8080}
+    volumes:
+      - uploads:/srv/documind/data/uploads
+      - eval_results:/srv/documind/data/evaluation/results
+      - models:/srv/models
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:80"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  uploads:
+  eval_results:
+  models:

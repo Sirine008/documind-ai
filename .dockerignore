@@ -1,0 +1,12 @@
+# Build context for the backend image is the repository root.
+.git
+.env
+.env.*
+.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+frontend/node_modules
+frontend/dist
+data/uploads
+data/evaluation/results

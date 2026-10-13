@@ -1,0 +1,15 @@
+# Shared Ruff configuration for backend/ and scripts/.
+line-length = 120
+target-version = "py312"
+extend-exclude = ["frontend", ".venv"]
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "W", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003", "SIM105", "B008", "UP046"]
+
+[lint.per-file-ignores]
+"scripts/sample_content.py" = ["E501"]
+"backend/migrations/*" = ["E501"]
+
+[lint.isort]
+known-first-party = ["app"]

@@ -1,0 +1,4 @@
+# Local embedding model (default provider). Install CPU-only torch first to avoid
+# multi-gigabyte CUDA wheels:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+sentence-transformers>=3.0,<6
