@@ -60,6 +60,9 @@ class EvaluationRunner:
         docs = self._document_map(dataset)
         results: list[dict] = []
         totals = {"input_tokens": 0, "output_tokens": 0, "estimated": False, "cost_usd": 0.0, "has_cost": False}
+        # Load a lazily loaded embedding model before timing, so its start-up time is not
+        # reported as the first question's retrieval latency.
+        self.qa.embedder.embed_query("warm-up")
 
         for q in dataset["questions"]:
             answerable = bool(q.get("answerable", True))
