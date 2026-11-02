@@ -117,6 +117,8 @@ sequenceDiagram
     C-->>UI: turn with citations and evidence_status
 ```
 
+The chat uses the streaming variant, `POST /conversations/{id}/messages/stream`. It runs the same steps through `QAService.answer_stream()`, which shares preparation (refusal, retrieval, evidence gate, prompt) and output validation with `answer()`. While the provider streams, an `AnswerStreamFilter` turns raw deltas into preview text that is sent as `token` events; the validated turn is persisted and sent as the final `done` event. If streaming fails at the transport level, the UI falls back to the non-streaming endpoint.
+
 ## Key design decisions
 
 **One database for everything.** Vectors, full-text indexes and relational metadata live in PostgreSQL. Hybrid retrieval is two indexed queries, deletion cascades atomically, and there is no second store to keep in sync. The trade-off is that pgvector's HNSW index is less tunable than a dedicated vector database; for a single-user corpus that is irrelevant.
@@ -128,6 +130,8 @@ sequenceDiagram
 **An evidence gate before the LLM.** If no retrieved passage covers enough of the question's terms (or, with a semantic embedding model, if the best similarity is below `DOCUMIND_MIN_SEMANTIC_SCORE`), the service answers "insufficient evidence" without a model call. This saves cost and avoids giving a model irrelevant context to improvise from. It can cause false abstentions on paraphrased questions; the evaluation tracks that rate.
 
 **Citations are validated after generation.** The model sees passages labelled `S1…Sn`. Any label it emits that wasn't supplied is stripped, and each surviving citation is rebuilt from the database row (title, page, chunk), so a citation can never point to something that wasn't retrieved.
+
+**Streamed text is a preview; the stored answer is validated.** Citation validation needs the complete answer, so `token` events carry an unvalidated preview (markers, abstention tokens and secrets removed) and the client replaces it with the `done` payload. A turn is stored only when the answer is complete, so a cancelled or failed stream leaves the conversation unchanged.
 
 **Background tasks instead of a queue.** FastAPI background tasks keep deployment to one process. The cost is durability: a crash mid-ingestion leaves the document in `processing`. The pipeline treats claims older than 30 minutes as stale and allows a retry. A real queue is listed under future improvements.
 

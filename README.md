@@ -50,6 +50,7 @@ Everything listed here is implemented and covered by automated tests unless note
 - Near-duplicate passage removal and an optional lexical reranker behind a pluggable interface.
 - Grounded answers with citations to real indexed passages: document title, page number and a supporting excerpt. Citation labels the model invents are removed.
 - Explicit "insufficient evidence" responses; answers without a valid citation are flagged as unverified.
+- Streaming answers over server-sent events: the chat shows the answer as the model writes it, then replaces it with the validated answer and its citations. Answers can be stopped mid-way, and the chat falls back to the regular endpoint if streaming is unavailable.
 - The model's interpretation is shown separately from what the documents state.
 - Prompt-injection safeguards and refusal of requests for system prompts or credentials.
 
@@ -148,7 +149,7 @@ Properties:
 5. **Retrieve** with hybrid search (top 6 by default, from 20 candidates per method), dedupe and rerank.
 6. **Evidence gate**: if no passage covers enough of the question, return "insufficient evidence" without calling the LLM.
 7. **Build the prompt**: passages are wrapped in `<source id="S1" title=… page=…>` blocks, delimiter-like text inside documents is neutralized, suspicious passages are flagged, and the system prompt states that sources are data, not instructions.
-8. **Generate** with the configured provider.
+8. **Generate** with the configured provider, either in one response or streamed (the chat streams; see [docs/api.md](docs/api.md#streaming-answers-server-sent-events)).
 9. **Validate the output**: parse `ANSWER:` and `INFERENCE:` sections, drop citation labels that don't correspond to a supplied passage, redact the configured API key, and attach each citation's title, page and best-matching excerpt from the real chunk.
 10. **Classify**: `supported` (at least one valid citation), `unverified` (an answer with no valid citation), `insufficient_evidence`, or `refused`.
 
@@ -382,6 +383,7 @@ Interactive OpenAPI documentation is served at `/api/v1/docs` (Swagger UI) and `
 | POST | `/api/v1/ask` | Stateless grounded answer |
 | POST/GET/DELETE | `/api/v1/conversations[/{id}]` | Conversation history |
 | POST | `/api/v1/conversations/{id}/messages` | Ask within a conversation |
+| POST | `/api/v1/conversations/{id}/messages/stream` | Same, streamed as server-sent events (`start`, `token`…, `done` or `error`) |
 | POST | `/api/v1/documents/{id}/study` | Summary, key points, revision notes or quiz |
 | POST/GET | `/api/v1/evaluation/runs[/{id}]` | Run and read evaluations |
 
@@ -395,11 +397,11 @@ pytest                    # all tests; database tests auto-skip if PostgreSQL is
 pytest -m "not db"        # tests that need no database
 ```
 
-Database tests use `DOCUMIND_TEST_DATABASE_URL` (default: a passwordless connection to a local `documind_test` database; set it if your database needs a password). They migrate it from scratch, then truncate tables between tests. All tests use the hashing embedder and the deterministic mock LLM; remote providers are tested against mocked HTTP.
+Database tests use `DOCUMIND_TEST_DATABASE_URL` (default: a passwordless connection to a local `documind_test` database; set it if your database needs a password). They migrate it from scratch, then truncate tables between tests. All tests use the hashing embedder and the deterministic mock LLM; remote providers, including their streaming, are tested against mocked HTTP.
 
-**Last local run:** 132 tests passed, 0 failed, 0 skipped (78 unit tests plus 54 PostgreSQL 16 + pgvector 0.6 tests), on both Python 3.13 and a clean Python 3.12 install. Frontend: ESLint, `tsc -b` and `vite build` pass.
+**Last local run (2026-11-02):** 176 tests passed, 0 failed, 0 skipped, 0 warnings (115 unit tests plus 61 PostgreSQL 16 + pgvector tests), on Windows 11 with Python 3.12, both with the ML extras installed and in a clean environment with only `requirements-dev.txt` (as in CI). Frontend: ESLint, `tsc -b` and `vite build` pass on Node 22.
 
-Coverage by area: validation and filename sanitization; extraction, page tracking and normalization; chunking and metadata; embedding interfaces and batching; persistence and constraints; duplicate uploads; ingestion failure, retry, OCR detection and missing files; incremental processing; semantic, keyword and hybrid retrieval; SQL-injection safety of keyword search; document scoping; citation validation and removal of invented citations; insufficient evidence; secret-request refusal; prompt-injection neutralization; conversations and follow-ups; study tools; API validation, status codes and error shape; deletion cascade; evaluation endpoints; metric calculations; configuration parsing; provider HTTP handling.
+Coverage by area: validation and filename sanitization; extraction, page tracking and normalization; chunking and metadata; embedding interfaces and batching; persistence and constraints; duplicate uploads; ingestion failure, retry, OCR detection and missing files; incremental processing; semantic, keyword and hybrid retrieval; SQL-injection safety of keyword search; document scoping; citation validation and removal of invented citations; insufficient evidence; secret-request refusal; prompt-injection neutralization; conversations and follow-ups; study tools; API validation, status codes and error shape; deletion cascade; evaluation endpoints; metric calculations; configuration parsing; provider HTTP handling; small-model output quirks (citation variants, prose abstentions); streaming (provider event streams, preview filtering and secret redaction, the SSE endpoint, persistence and error events).
 
 The frontend has no automated component tests. It was checked end to end in headless Chromium (upload, ask, citation and evidence panel, insufficient evidence, scoped conversation, quiz, evaluation, mobile width, dark mode) with no console errors; that script is not part of the repository.
 
@@ -518,7 +520,7 @@ The screenshots were captured from the running application in demo mode.
 - A durable job queue (for example RQ or Celery) instead of in-process background tasks.
 - OCR for scanned pages (OCRmyPDF or Tesseract).
 - A cross-encoder reranker behind the existing `Reranker` interface.
-- Streaming answers, and evaluation runs with real LLMs and embeddings on a larger, independently written dataset.
+- Evaluation runs with larger LLMs on a larger, independently written dataset, plus a recorded manual review.
 - Frontend component tests (Vitest + Testing Library) and an end-to-end suite in CI.
 - More formats (DOCX, HTML) and table-aware PDF extraction.
 

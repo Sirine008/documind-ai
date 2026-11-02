@@ -133,13 +133,67 @@ curl -X POST http://localhost:8000/api/v1/ask \
 curl -X POST http://localhost:8000/api/v1/conversations -H "Content-Type: application/json" \
   -d '{"document_ids": ["<document-id>"]}'
 
-# Ask (follow-ups use the conversation's recent history)
+# Ask (follow-ups use the conversation's recent history); see below for the streaming variant
 curl -X POST http://localhost:8000/api/v1/conversations/<id>/messages -H "Content-Type: application/json" \
   -d '{"question": "What must be reported within 4 hours?"}'
 
 curl http://localhost:8000/api/v1/conversations/<id>       # messages with citations
 curl -X DELETE http://localhost:8000/api/v1/conversations/<id>
 ```
+
+### Streaming answers (server-sent events)
+
+`POST /api/v1/conversations/{id}/messages/stream` takes the same body as `/messages` and answers the same way, but responds with `text/event-stream` so the answer can be shown while the model writes it. The non-streaming endpoint is unchanged.
+
+```bash
+curl -N -X POST http://localhost:8000/api/v1/conversations/<id>/messages/stream \
+  -H "Content-Type: application/json" -d '{"question": "What must be reported within 4 hours?"}'
+```
+
+Events, in order:
+
+| Event | `data` | Notes |
+|---|---|---|
+| `start` | `{"conversation_id": "…"}` | Sent immediately, before retrieval. |
+| `token` | `{"text": "…"}` | Zero or more. Concatenated, they form a **preview** of the answer. |
+| `done` | A `ConversationTurn`, exactly as returned by `/messages` | Last event on success. The turn is now stored. |
+| `error` | The usual error body, `{"error": {"code", "message", "details"}}` | Last event on failure, e.g. `llm_provider_error`. Nothing is stored. |
+
+Shortened capture from the real stack (llama3.2:3b via Ollama on CPU, IDs shortened):
+
+```text
+event: start
+data: {"conversation_id": "4e9b…"}
+
+event: token
+data: {"text": "Secur"}
+
+event: token
+data: {"text": "i"}
+
+event: token
+data: {"text": "ty inciden"}
+
+…
+
+event: token
+data: {"text": "ine [S"}
+
+event: token
+data: {"text": "1]."}
+
+event: done
+data: {"user_message": {"id": "24ec…", "role": "user", "content": "What must be reported within 4 hours?", …}, "assistant_message": {"id": "69c6…", "role": "assistant", "content": "Security incidents, including a lost or stolen laptop, must be reported to the IT security team within 4 hours by emailing the security desk or calling the incident hotline [S1].", "evidence_status": "supported", "citations": [{"label": "S1", "document_title": "northwind remote work policy", "page_number": 4, …}], "usage": {"input_tokens": 1336, "output_tokens": 45, "estimated": false, "provider": "openai", "model": "llama3.2:3b", "retrieved": 6}, "latency_ms": 38294.4, …}}
+```
+
+Behaviour worth knowing:
+
+- **The preview is not the answer.** Token text omits the `ANSWER:`/`INFERENCE:` markers and never shows `INSUFFICIENT_EVIDENCE`, and configured secrets are redacted before they are sent, but citation labels in it are not validated yet. Render the `done` payload as the final message: its citations are checked against the retrieved passages and unknown labels are removed.
+- **Same rules as `/messages`.** Secret requests are refused and questions that fail the pre-generation evidence gate are answered without calling the model; both produce `start` followed directly by `done`.
+- **Errors before the stream starts** (unknown conversation `404`, invalid body `422`) are ordinary JSON error responses, not events.
+- **Cancelling**: if the client disconnects before `done`, the turn is not stored.
+- **Proxies** must not buffer the response. The endpoint sends `Cache-Control: no-cache` and `X-Accel-Buffering: no` (honoured by the bundled nginx); the Vite dev proxy passes events through as they arrive.
+- Every provider streams: the OpenAI-compatible provider (including Ollama) and Anthropic stream from their APIs, and the demo provider streams its extractive answer word by word.
 
 ## Study tools
 

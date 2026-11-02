@@ -38,6 +38,7 @@ Out of scope for this version: hostile **users** of the API. There is no authent
 - CORS origins come from `DOCUMIND_CORS_ORIGINS`; credentials are not allowed; only `GET`, `POST`, `DELETE` and the `Content-Type` header are permitted.
 - Responses carry `X-Content-Type-Options: nosniff`. The nginx config adds a restrictive Content-Security-Policy (same-origin scripts, styles, fonts and API calls) and `Referrer-Policy: same-origin`.
 - LLM HTTP calls have a timeout (`DOCUMIND_LLM_TIMEOUT_S`, default 60 s); provider error bodies are not passed to clients.
+- Streamed answer previews redact the configured API key before sending: the preview holds back a tail at least as long as the key, so a key split across model deltas is still recognized. Citations are validated only in the final `done` event.
 - The frontend loads no third-party scripts or fonts.
 
 ### Prompt injection
