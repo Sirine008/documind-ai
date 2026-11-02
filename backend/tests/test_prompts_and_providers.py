@@ -128,6 +128,36 @@ def test_placeholder_answers_count_as_abstention(answer):
     assert parse_answer(raw) == ("", None, True)
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [
+        # Verbatim llama3.2:3b replies to unanswerable evaluation questions.
+        "There is no mention of a parental leave policy in the provided passages [S1-S4].",
+        "The inventor of the first solar cell is not mentioned in the passages [S1].",
+        "The documents do not specify who invented the first solar cell.",
+    ],
+)
+def test_absence_statements_count_as_abstention(answer):
+    assert parse_answer(f"ANSWER: {answer}\nINFERENCE: None.") == ("", None, True)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Lithium-ion batteries do not contain liquid electrolyte in this design [S2].",
+        "The policy does not mention a fixed end date, but approval is reviewed yearly [S1]. Reviews are annual [S2].",
+        "Contractors are not covered by the stipend [S1].",
+    ],
+)
+def test_factual_negative_answers_are_kept(answer):
+    assert parse_answer(f"ANSWER: {answer}\nINFERENCE: None.")[2] is False
+
+
+def test_citation_ranges_are_expanded():
+    assert normalize_citations("Text [S1-S3].") == "Text [S1][S2][S3]."
+    assert normalize_citations("Text [S2 to S4, S7].") == "Text [S2][S3][S4][S7]."
+
+
 def test_answer_prompt_shows_citation_example_and_reminder():
     (msg,) = build_answer_messages("How much?", SOURCES, [])
     assert "e.g. [S1]" in msg["content"].splitlines()[-1]

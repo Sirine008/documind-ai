@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 
+from app.core.text import split_sentences
 from app.llm.base import SourceRef
 
 ANSWER_SYSTEM_PROMPT = """You are DocuMind, an assistant that answers questions strictly from the \
@@ -32,6 +33,7 @@ Answering rules:
 - Cite every factual sentence with the label of the passage that supports it, e.g. [S1] or [S1][S3]. \
 Only use labels that appear in the supplied passages.
 - If the passages do not contain enough information to answer, reply with exactly: INSUFFICIENT_EVIDENCE
+Do not write a sentence saying that the passages do not mention something; reply INSUFFICIENT_EVIDENCE instead.
 - Keep evidence and interpretation separate. Reply in exactly this format:
 ANSWER: <the answer, every sentence cited>
 INFERENCE: <optional interpretation or connection you drew that is not stated verbatim; write "None." if there is none>
@@ -152,21 +154,45 @@ def build_study_messages(task: str, title: str, sources: list[SourceRef]) -> lis
 
 _CITATION_RE = re.compile(r"\[(S\d{1,3})\]")
 # Label groups that small models write instead of "[S1][S2]": "[S1, S2]", "(S1)", "[Source S1]",
-# "[source: S1; S3]". Only groups made entirely of S-labels are rewritten.
-_LABEL_GROUP_RE = re.compile(r"[\[(]\s*(?:(?i:sources?)\s*:?\s*)?(S\d{1,3}(?:\s*(?:,|;|and|&)\s*S\d{1,3})*)\s*[\])]")
-
+# "[source: S1; S3]", "[S1-S4]". Only groups made entirely of S-labels are rewritten.
+_LABEL_GROUP_RE = re.compile(
+    r"[\[(]\s*(?:(?i:sources?)\s*:?\s*)?(S\d{1,3}(?:\s*(?:,|;|and|&|-|–|to)\s*S\d{1,3})*)\s*[\])]"
+)
 
 _NO_ANSWER = {"", "none", "n/a", "no answer", "unknown", "not stated", "not mentioned"}
+# A one-sentence answer that only says the sources lack the information, e.g. "The inventor
+# is not mentioned in the passages [S1]." Both parts must match, so a factual negative such
+# as "Batteries do not contain cadmium [S2]." is still treated as an answer.
+_ABSENT_RE = re.compile(
+    r"\b(?:not|never)\s+(?:mentioned|stated|specified|provided|given|found|covered|addressed|discussed)\b"
+    r"|\bno\s+(?:mention|information|details?|data)\b"
+    r"|\b(?:do|does|did)\s+not\s+(?:mention|contain|provide|specify|say|state|include|cover|address|discuss)\b"
+    r"|\b(?:not\s+enough|insufficient)\s+information\b",
+    re.IGNORECASE,
+)
+_SOURCES_RE = re.compile(r"\b(?:passages?|documents?|sources?|context|provided\s+(?:text|information))\b", re.I)
 
 
 def normalize_citations(text: str) -> str:
     """Rewrite citation-label variants into the canonical ``[S1][S2]`` form."""
 
     def canonical(match: re.Match) -> str:
-        labels = re.findall(r"S(\d{1,3})", match.group(1))
-        return "".join(f"[S{n}]" for n in labels)
+        numbers: list[int] = []
+        for sep, n in re.findall(r"(-|–|to)?\s*S(\d{1,3})", match.group(1)):
+            n = int(n)
+            if sep and numbers and 0 < n - numbers[-1] <= 20:  # a range such as S1-S4
+                numbers.extend(range(numbers[-1] + 1, n + 1))
+            else:
+                numbers.append(n)
+        return "".join(f"[S{n}]" for n in numbers)
 
     return _LABEL_GROUP_RE.sub(canonical, text)
+
+
+def is_absence_statement(answer: str) -> bool:
+    """True for an answer that only reports that the sources lack the information."""
+    text = _CITATION_RE.sub("", answer).strip()
+    return len(split_sentences(text)) <= 1 and bool(_ABSENT_RE.search(text)) and bool(_SOURCES_RE.search(text))
 
 
 def parse_answer(text: str) -> tuple[str, str | None, bool]:
@@ -183,8 +209,8 @@ def parse_answer(text: str) -> tuple[str, str | None, bool]:
         inference = None
     if "INSUFFICIENT_EVIDENCE" in answer and len(answer) < 60:
         return "", None, True
-    # Small models sometimes signal "no answer" with a placeholder instead of the marker.
-    if _CITATION_RE.sub("", answer).strip(" .").lower() in _NO_ANSWER:
+    # Small models sometimes signal "no answer" with a placeholder or a sentence instead of the marker.
+    if _CITATION_RE.sub("", answer).strip(" .").lower() in _NO_ANSWER or is_absence_statement(answer):
         return "", None, True
     return answer, inference, False
 
