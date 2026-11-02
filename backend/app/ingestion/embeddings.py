@@ -149,7 +149,9 @@ class SentenceTransformerEmbedder:
                         ) from exc
                     logger.info("loading_embedding_model", extra={"model": self.name})
                     model = SentenceTransformer(self.name, device="cpu")
-                    actual = model.get_sentence_embedding_dimension()
+                    # Renamed in sentence-transformers 5.x; keep the old name for 3.x/4.x.
+                    get_dim = getattr(model, "get_embedding_dimension", None) or model.get_sentence_embedding_dimension
+                    actual = get_dim()
                     if actual != self.dim:
                         raise RuntimeError(
                             f"Model dimension {actual} does not match DOCUMIND_EMBEDDING_DIM={self.dim}."

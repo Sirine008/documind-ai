@@ -1,9 +1,11 @@
+import sys
+import types
 import uuid
 
 import numpy as np
 import pytest
 
-from app.ingestion.embeddings import HashingEmbedder, embed_in_batches
+from app.ingestion.embeddings import HashingEmbedder, SentenceTransformerEmbedder, embed_in_batches
 from app.retrieval.engine import RetrievedPassage, build_tsquery_terms, deduplicate, reciprocal_rank_fusion
 from app.retrieval.rerank import LexicalReranker, NoopReranker, term_coverage
 
@@ -26,6 +28,24 @@ def test_hashing_embedder_similarity_tracks_overlap():
 def test_empty_text_does_not_produce_zero_vector():
     vec = HashingEmbedder(16).embed_query("")
     assert any(v != 0 for v in vec)
+
+
+@pytest.mark.parametrize("method", ["get_embedding_dimension", "get_sentence_embedding_dimension"])
+def test_sentence_transformer_dimension_check_supports_old_and_new_api(monkeypatch, method):
+    """sentence-transformers 5.x renamed the dimension getter; both names must work."""
+
+    class FakeModel:
+        def __init__(self, name, device):
+            pass
+
+        def encode(self, texts, **kw):
+            return np.ones((len(texts), 4), dtype=np.float32) / 2
+
+    setattr(FakeModel, method, lambda self: 4)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", types.SimpleNamespace(SentenceTransformer=FakeModel))
+    assert SentenceTransformerEmbedder("fake", dim=4).embed_query("x") == [0.5] * 4
+    with pytest.raises(RuntimeError, match="does not match"):
+        SentenceTransformerEmbedder("fake", dim=8).embed_query("x")
 
 
 class CountingEmbedder(HashingEmbedder):
