@@ -232,3 +232,51 @@ def redact_secrets(text: str, secrets: list[str]) -> str:
         if secret and len(secret) >= 8:
             text = text.replace(secret, "[redacted]")
     return text
+
+
+_INFERENCE_RE = re.compile(r"\n\s*INFERENCE:", re.IGNORECASE)
+
+
+class AnswerStreamFilter:
+    """Turns raw streamed model output into text that is safe to show while it arrives.
+
+    The preview is the ``ANSWER:`` section only: the prefix is dropped, output stops at
+    ``INFERENCE:``, ``INSUFFICIENT_EVIDENCE`` is never shown, and configured secrets are
+    redacted. A short tail is held back until more text arrives, so a marker or secret
+    split across deltas is recognized before any part of it is sent. Citations in the
+    preview are not validated yet; the final, parsed answer replaces the preview.
+    """
+
+    def __init__(self, secrets: list[str]):
+        self.secrets = [s for s in secrets if s and len(s) >= 8]
+        self.hold = max([len("\nINFERENCE:") + 2, *(len(s) for s in self.secrets)])
+        self.raw = ""
+        self.sent = ""
+
+    def _display(self) -> str:
+        text = redact_secrets(self.raw, self.secrets).lstrip()
+        if text.upper().startswith("ANSWER:"):
+            text = text[len("ANSWER:") :].lstrip()
+        if match := _INFERENCE_RE.search(text):
+            text = text[: match.start()]
+        return text
+
+    def _emit(self, final: bool) -> str:
+        head = self.raw.lstrip().upper()
+        if not head or "ANSWER:".startswith(head):
+            return ""  # the prefix may still be arriving
+        display = self._display()
+        if "INSUFFICIENT_EVIDENCE".startswith(display.upper()[:21]):
+            return ""  # an abstention (or the start of one) is never shown
+        ready = display if final else display[: max(0, len(display) - self.hold)]
+        if len(ready) <= len(self.sent) or not ready.startswith(self.sent):
+            return ""
+        delta, self.sent = ready[len(self.sent) :], ready
+        return delta
+
+    def feed(self, delta: str) -> str:
+        self.raw += delta
+        return self._emit(final=False)
+
+    def finish(self) -> str:
+        return self._emit(final=True)

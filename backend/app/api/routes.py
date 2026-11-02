@@ -3,17 +3,21 @@ serialize; business logic lives in ``app.services``."""
 
 from __future__ import annotations
 
+import json
+import logging
 import uuid
+from collections.abc import Iterator
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, Request, Response, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import schedule_ingestion
 from app.core.config import get_settings
-from app.core.errors import PayloadTooLarge, ServiceUnavailable
-from app.db.session import check_database, get_db
+from app.core.errors import AppError, PayloadTooLarge, ServiceUnavailable
+from app.db.session import check_database, get_db, get_session_factory
 from app.evaluation.runner import run_and_store
 from app.ingestion.embeddings import get_embedder
 from app.llm import get_llm_provider
@@ -58,6 +62,7 @@ ERRORS = {
 }
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _limit() -> int:
@@ -306,6 +311,58 @@ def conversation_ask(conversation_id: uuid.UUID, body: ConversationAsk, db: DB) 
     user, assistant = ConversationService(db).ask(conversation_id, body.question)
     return ConversationTurn(
         user_message=MessageOut.model_validate(user), assistant_message=MessageOut.model_validate(assistant)
+    )
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _answer_events(conversation_id: uuid.UUID, question: str) -> Iterator[str]:
+    """Server-sent events for one conversation turn: start, token*, then done or error."""
+    session = get_session_factory()()  # the stream outlives the request-scoped session
+    try:
+        yield _sse("start", {"conversation_id": str(conversation_id)})
+        for item in ConversationService(session).ask_stream(conversation_id, question):
+            if isinstance(item, str):
+                yield _sse("token", {"text": item})
+            else:
+                user, assistant = item
+                turn = ConversationTurn(
+                    user_message=MessageOut.model_validate(user), assistant_message=MessageOut.model_validate(assistant)
+                )
+                yield _sse("done", turn.model_dump(mode="json"))
+    except AppError as exc:
+        session.rollback()
+        yield _sse("error", {"error": {"code": exc.code, "message": exc.message, "details": exc.details}})
+    except Exception:
+        session.rollback()
+        logger.exception("answer_stream_failed", extra={"conversation_id": str(conversation_id)})
+        yield _sse("error", {"error": {"code": "internal_error", "message": "An unexpected error occurred."}})
+    finally:
+        session.close()
+
+
+@router.post(
+    "/conversations/{conversation_id}/messages/stream",
+    tags=["conversations"],
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "content": {"text/event-stream": {}},
+            "description": "Server-sent events: `start`, `token` (repeated), then `done` (a ConversationTurn) "
+            "or `error` (the usual error body).",
+        },
+        **ERRORS,
+    },
+    summary="Ask within a conversation and stream the answer as server-sent events",
+)
+def conversation_ask_stream(conversation_id: uuid.UUID, body: ConversationAsk, db: DB) -> StreamingResponse:
+    ConversationService(db).get(conversation_id)  # a missing conversation is a plain 404, not a stream
+    return StreamingResponse(
+        _answer_events(conversation_id, body.question),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

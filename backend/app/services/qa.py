@@ -6,20 +6,21 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.core.errors import NotFoundError
+from app.core.errors import NotFoundError, ProviderError
 from app.core.text import shorten, split_sentences
 from app.ingestion.embeddings import Embedder, HashingEmbedder, get_embedder
 from app.llm import get_llm_provider
-from app.llm.base import LLMProvider, LLMRequest, SourceRef
+from app.llm.base import LLMProvider, LLMRequest, LLMResponse, SourceRef
 from app.llm.prompts import (
     ANSWER_SYSTEM_PROMPT,
+    AnswerStreamFilter,
     build_answer_messages,
     extract_citation_labels,
     is_secret_request,
@@ -57,6 +58,16 @@ class AnswerResult:
     usage: dict
     latency_ms: float
     passages: list[RetrievedPassage] = field(default_factory=list)
+
+
+@dataclass
+class _Prepared:
+    """State carried from retrieval and prompt building to output validation."""
+
+    start: float
+    request: LLMRequest
+    retrieval: RetrievalResult
+    by_label: dict[str, RetrievedPassage]
 
 
 def best_excerpt(chunk_text: str, answer_text: str, limit: int = 300) -> str:
@@ -140,6 +151,56 @@ class QAService:
         history: Sequence[dict[str, str]] = (),
         top_k: int | None = None,
     ) -> AnswerResult:
+        prepared = self._prepare(question, document_ids, history, top_k)
+        if isinstance(prepared, AnswerResult):
+            return prepared
+        return self._finish(prepared, self.provider.generate(prepared.request))
+
+    def answer_stream(
+        self,
+        question: str,
+        *,
+        document_ids: Sequence[uuid.UUID] | None = None,
+        history: Sequence[dict[str, str]] = (),
+        top_k: int | None = None,
+    ) -> Iterator[str | AnswerResult]:
+        """Like :meth:`answer`, but first yields preview text deltas as the model writes them.
+
+        The last item is always the ``AnswerResult``, produced exactly as by :meth:`answer`.
+        Refusals and the pre-generation evidence gate yield only the result.
+        """
+        prepared = self._prepare(question, document_ids, history, top_k)
+        if isinstance(prepared, AnswerResult):
+            yield prepared
+            return
+        stream = getattr(self.provider, "stream", None)
+        if stream is None:  # providers without streaming support still work
+            yield self._finish(prepared, self.provider.generate(prepared.request))
+            return
+        preview = AnswerStreamFilter(self._secrets())
+        response: LLMResponse | None = None
+        for item in stream(prepared.request):
+            if isinstance(item, LLMResponse):
+                response = item
+            elif text := preview.feed(item):
+                yield text
+        if response is None:
+            raise ProviderError("The language model provider ended the stream without a response.")
+        if tail := preview.finish():
+            yield tail
+        yield self._finish(prepared, response)
+
+    def _secrets(self) -> list[str]:
+        return [self.settings.llm_api_key.get_secret_value()] if self.settings.llm_api_key else []
+
+    def _prepare(
+        self,
+        question: str,
+        document_ids: Sequence[uuid.UUID] | None,
+        history: Sequence[dict[str, str]],
+        top_k: int | None,
+    ) -> AnswerResult | _Prepared:
+        """Everything before generation; returns a final result when no LLM call is needed."""
         start = time.perf_counter()
         question = " ".join(question.split())[: self.settings.max_question_chars]
         if is_secret_request(question):
@@ -175,7 +236,11 @@ class QAService:
             max_tokens=self.settings.llm_max_tokens,
             temperature=self.settings.llm_temperature,
         )
-        response = self.provider.generate(request)
+        return _Prepared(start=start, request=request, retrieval=retrieval, by_label=by_label)
+
+    def _finish(self, prepared: _Prepared, response: LLMResponse) -> AnswerResult:
+        """Validate model output: parse sections, keep only real citations, classify."""
+        start, retrieval, by_label = prepared.start, prepared.retrieval, prepared.by_label
         usage = response.usage.as_dict()
         if self.settings.llm_cost_per_1k_input is not None and self.settings.llm_cost_per_1k_output is not None:
             usage["estimated_cost_usd"] = round(
@@ -184,8 +249,7 @@ class QAService:
                 6,
             )
 
-        secrets = [self.settings.llm_api_key.get_secret_value()] if self.settings.llm_api_key else []
-        answer, inference, insufficient = parse_answer(redact_secrets(response.text, secrets))
+        answer, inference, insufficient = parse_answer(redact_secrets(response.text, self._secrets()))
         common = {
             "retrieved": len(retrieval.passages),
             "provider": response.provider,

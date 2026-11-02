@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
@@ -57,3 +58,7 @@ class LLMProvider(Protocol):
     model: str
 
     def generate(self, request: LLMRequest) -> LLMResponse: ...
+
+    def stream(self, request: LLMRequest) -> Iterator[str | LLMResponse]:
+        """Yield text deltas as they arrive, then one final ``LLMResponse`` with the full text."""
+        ...

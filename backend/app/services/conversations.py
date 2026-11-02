@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.core.errors import NotFoundError
 from app.models import Conversation, Document, Message, utcnow
-from app.services.qa import QAService
+from app.services.qa import AnswerResult, QAService
 
 DEFAULT_TITLE = "New conversation"
 SCOPE_EMPTY_MESSAGE = (
@@ -74,14 +75,39 @@ class ConversationService:
         self.session.commit()
 
     def ask(self, conversation_id: uuid.UUID, question: str) -> tuple[Message, Message]:
+        conv, history, scope = self._load_for_question(conversation_id)
+        if conv.is_scoped and not scope:
+            return self._persist(conv, question, None)
+        result = self.qa.answer(question, document_ids=scope or None, history=history)
+        return self._persist(conv, question, result)
+
+    def ask_stream(self, conversation_id: uuid.UUID, question: str) -> Iterator[str | tuple[Message, Message]]:
+        """Like :meth:`ask`, but yields answer preview deltas before the persisted turn.
+
+        The turn is stored only once the answer is complete, so a stream that is
+        cancelled or fails part-way leaves the conversation unchanged.
+        """
+        conv, history, scope = self._load_for_question(conversation_id)
+        if conv.is_scoped and not scope:
+            yield self._persist(conv, question, None)
+            return
+        for item in self.qa.answer_stream(question, document_ids=scope or None, history=history):
+            if isinstance(item, AnswerResult):
+                yield self._persist(conv, question, item)
+            else:
+                yield item
+
+    def _load_for_question(self, conversation_id: uuid.UUID) -> tuple[Conversation, list[dict], list[uuid.UUID]]:
         conv = self.get(conversation_id)
         self.session.refresh(conv)  # pick up documents deleted since the conversation was loaded
         turns = self.settings.conversation_history_turns * 2
         history = [{"role": m.role, "content": m.content} for m in conv.messages[-turns:]] if turns else []
-        scope = [d.id for d in conv.documents]
+        return conv, history, [d.id for d in conv.documents]
 
+    def _persist(self, conv: Conversation, question: str, result: AnswerResult | None) -> tuple[Message, Message]:
+        """Store the question and its answer; ``result=None`` means the scope is empty."""
         user_msg = Message(conversation_id=conv.id, role="user", content=question)
-        if conv.is_scoped and not scope:
+        if result is None:
             assistant_msg = Message(
                 conversation_id=conv.id,
                 role="assistant",
@@ -91,7 +117,6 @@ class ConversationService:
                 usage={},
             )
         else:
-            result = self.qa.answer(question, document_ids=scope or None, history=history)
             assistant_msg = Message(
                 conversation_id=conv.id,
                 role="assistant",

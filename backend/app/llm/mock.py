@@ -13,6 +13,7 @@ import json
 import math
 import re
 from collections import Counter
+from collections.abc import Iterator
 
 from app.core.text import split_sentences
 from app.ingestion.embeddings import _stem, tokenize
@@ -52,6 +53,12 @@ class MockProvider:
         }[request.task]
         text = handler(request)
         return LLMResponse(text=text, provider=self.name, model=self.model, usage=_usage(request, text))
+
+    def stream(self, request: LLMRequest) -> Iterator[str | LLMResponse]:
+        """Stream the deterministic output word by word, so demo mode and tests exercise streaming."""
+        response = self.generate(request)
+        yield from re.findall(r"\S+\s*|\s+", response.text)
+        yield response
 
     # -- question answering ----------------------------------------------------------
     @staticmethod
