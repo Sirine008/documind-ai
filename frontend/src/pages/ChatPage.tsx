@@ -9,9 +9,12 @@ interface Props {
   selectedIds: Set<string>;
   readyCount: number;
   asking: string | null;
+  /** Answer preview while it streams in; null when no answer is being written. */
+  streamingText: string | null;
   demoMode: boolean;
   activeChunkId: string | null;
   onAsk: (question: string) => void;
+  onCancelAsk: () => void;
   onNewConversation: () => void;
   onOpenCitation: (citation: Citation) => void;
 }
@@ -74,16 +77,17 @@ function AssistantMessage({
 
 export function ChatPage(props: Props) {
   const {
-    conversation, documentsById, selectedIds, readyCount, asking, demoMode, activeChunkId,
-    onAsk, onNewConversation, onOpenCitation,
+    conversation, documentsById, selectedIds, readyCount, asking, streamingText, demoMode, activeChunkId,
+    onAsk, onCancelAsk, onNewConversation, onOpenCitation,
   } = props;
   const [draft, setDraft] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
   const messages = conversation?.messages ?? [];
+  const streaming = !!streamingText;
 
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ block: "end", behavior: "smooth" });
-  }, [messages.length, asking]);
+  }, [messages.length, asking, streaming]);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -147,10 +151,20 @@ export function ChatPage(props: Props) {
               <li className="message message-user">
                 <p>{asking}</p>
               </li>
-              <li className="message message-assistant" aria-live="polite">
-                <p className="thinking">
-                  <span className="spinner" aria-hidden="true" /> Searching the documents…
-                </p>
+              <li className="message message-assistant" aria-live="polite" aria-busy="true">
+                {streamingText ? (
+                  <article className="answer answer-streaming">
+                    <p className="answer-text">
+                      {streamingText}
+                      <span className="stream-caret" aria-hidden="true" />
+                    </p>
+                    <p className="muted small">Writing… citations are checked once the answer is complete.</p>
+                  </article>
+                ) : (
+                  <p className="thinking">
+                    <span className="spinner" aria-hidden="true" /> Searching the documents…
+                  </p>
+                )}
               </li>
             </>
           )}
@@ -174,9 +188,15 @@ export function ChatPage(props: Props) {
             if (e.key === "Enter" && !e.shiftKey) submit(e);
           }}
         />
-        <button type="submit" className="button button-primary" disabled={!draft.trim() || !!asking || !readyCount}>
-          Ask
-        </button>
+        {asking ? (
+          <button type="button" className="button button-quiet" onClick={onCancelAsk}>
+            Stop
+          </button>
+        ) : (
+          <button type="submit" className="button button-primary" disabled={!draft.trim() || !readyCount}>
+            Ask
+          </button>
+        )}
       </form>
     </section>
   );

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { EvidencePane } from "./components/EvidencePane";
 import { Library } from "./components/Library";
@@ -7,8 +7,15 @@ import { useToasts } from "./hooks/useToasts";
 import { ChatPage } from "./pages/ChatPage";
 import { EvaluationPage } from "./pages/EvaluationPage";
 import { StudyPage } from "./pages/StudyPage";
-import { ApiError, api } from "./services/api";
-import type { Citation, Conversation, ConversationDetail, DocumentInfo, PublicConfig } from "./types/api";
+import { ApiError, StreamUnavailableError, api } from "./services/api";
+import type {
+  Citation,
+  Conversation,
+  ConversationDetail,
+  ConversationTurn,
+  DocumentInfo,
+  PublicConfig,
+} from "./types/api";
 
 type View = "chat" | "study" | "evaluation";
 type Pane = "library" | "main" | "evidence";
@@ -31,6 +38,8 @@ export default function App() {
   const [conversation, setConversation] = useState<ConversationDetail | null>(null);
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [asking, setAsking] = useState<string | null>(null);
+  const [streamingText, setStreamingText] = useState<string | null>(null);
+  const askAbort = useRef<AbortController | null>(null);
   const [uploads, setUploads] = useState<string[]>([]);
   const [evidence, setEvidence] = useState<Citation | null>(null);
   const [view, setView] = useState<View>("chat");
@@ -146,6 +155,9 @@ export default function App() {
 
   const ask = async (question: string) => {
     setAsking(question);
+    setStreamingText("");
+    const controller = new AbortController();
+    askAbort.current = controller;
     try {
       let current = conversation;
       if (!current) {
@@ -153,7 +165,18 @@ export default function App() {
         current = { ...created, messages: [] };
         setConversation(current);
       }
-      const turn = await api.ask(current.id, question);
+      let turn: ConversationTurn;
+      try {
+        turn = await api.askStream(current.id, question, {
+          signal: controller.signal,
+          onToken: (text) => setStreamingText((shown) => (shown ?? "") + text),
+        });
+      } catch (err) {
+        if (!(err instanceof StreamUnavailableError)) throw err;
+        // Nothing was stored for an incomplete stream, so asking again without streaming is safe.
+        setStreamingText("");
+        turn = await api.ask(current.id, question);
+      }
       setConversation((c) =>
         c && c.id === current.id ? { ...c, messages: [...c.messages, turn.user_message, turn.assistant_message] } : c,
       );
@@ -161,11 +184,16 @@ export default function App() {
       setConversation(fresh);
       void refreshConversations();
     } catch (err) {
-      notify("error", message(err, "The question could not be answered."));
+      if (controller.signal.aborted) notify("info", "Stopped. The unfinished answer was not saved.");
+      else notify("error", message(err, "The question could not be answered."));
     } finally {
+      askAbort.current = null;
       setAsking(null);
+      setStreamingText(null);
     }
   };
+
+  const cancelAsk = () => askAbort.current?.abort();
 
   const openCitation = (c: Citation) => {
     setEvidence(c);
@@ -237,9 +265,11 @@ export default function App() {
               selectedIds={selectedIds}
               readyCount={readyCount}
               asking={asking}
+              streamingText={streamingText}
               demoMode={!!config?.demo_mode}
               activeChunkId={evidence?.chunk_id ?? null}
               onAsk={ask}
+              onCancelAsk={cancelAsk}
               onNewConversation={() => {
                 setConversation(null);
                 setEvidence(null);
