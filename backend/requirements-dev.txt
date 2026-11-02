@@ -1,3 +1,6 @@
 -r requirements.txt
 pytest>=8,<10
 ruff>=0.6
+# starlette's TestClient is built on httpx2 and warns (StarletteDeprecationWarning) when it
+# has to fall back to httpx. The application itself keeps using httpx.
+httpx2>=2.0
