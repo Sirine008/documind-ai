@@ -127,4 +127,11 @@ Mean faithfulness: <x>. Mean citation score: <y>.
 
 ## Current results
 
-The only evaluation run so far used the **offline demo configuration** (hashing embedder, extractive mock provider). Results and caveats are in the README's [Evaluation section](../README.md#evaluation); raw output is in [`evaluation-results-demo.json`](evaluation-results-demo.json). **No run with a real LLM or the Sentence Transformers model has been performed yet**, and no manual review has been recorded.
+Two configurations have been measured on the bundled dataset. Results, the comparison and caveats are in the README's [Evaluation section](../README.md#evaluation).
+
+| Configuration | Date | Raw output |
+|---|---|---|
+| Demo: hashing embedder + extractive mock provider | 2026-10-12 | [`evaluation-results-demo.json`](evaluation-results-demo.json) |
+| Real models: `all-MiniLM-L6-v2` + `llama3.2:3b` via Ollama, CPU only | 2026-11-02 | [`evaluation-results-ollama.json`](evaluation-results-ollama.json) |
+
+The real-model run is the third run with that setup. The first two exposed output-format problems in the small model (missing citation labels, abstentions written as prose), which were fixed in the prompt and parser before the reported run. Because those fixes were made while looking at this same question set, the reported numbers are optimistic. No manual review has been recorded yet.

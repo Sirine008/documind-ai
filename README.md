@@ -160,7 +160,9 @@ Properties:
 | `openai` | Any OpenAI-compatible `/chat/completions` API: OpenAI, Groq, Together, or a local Ollama / llama.cpp server via `DOCUMIND_LLM_BASE_URL`. |
 | `anthropic` | Anthropic Messages API. |
 
-The remote providers are tested against mocked HTTP responses only; they have **not** been exercised against live APIs in this repository's test runs.
+The automated tests exercise the remote providers against mocked HTTP responses only (both regular and streaming). The OpenAI-compatible provider has also been run against a live local model (`llama3.2:3b` through Ollama) for the [real-model evaluation](#evaluation) and a manual streaming check. The Anthropic provider has **not** been exercised against the live API.
+
+For a local model through Ollama, use `DOCUMIND_LLM_PROVIDER=openai`, `DOCUMIND_LLM_BASE_URL=http://localhost:11434/v1` (Ollama needs no API key; the evaluation used the placeholder `ollama`), and raise `DOCUMIND_LLM_TIMEOUT_S` (300 worked for a 3B model on a laptop CPU).
 
 ## Database schema
 
@@ -341,6 +343,7 @@ All settings are environment variables prefixed with `DOCUMIND_`, read from the 
 | `DOCUMIND_LLM_PROVIDER` | No | `mock` | `mock`, `openai` or `anthropic`. |
 | `DOCUMIND_LLM_API_KEY` | For hosted LLMs | empty | Never logged; redacted from model output. |
 | `DOCUMIND_LLM_MODEL`, `DOCUMIND_LLM_BASE_URL` | No | `gpt-4o-mini`, OpenAI URL | Point the base URL at Ollama for a local model. |
+| `DOCUMIND_LLM_TIMEOUT_S` | No | `60` | Raise for local models on CPU (e.g. `300`). |
 | `DOCUMIND_EMBEDDING_PROVIDER` | No | `sentence-transformers` | `hashing` for offline use or tests. |
 | `DOCUMIND_EMBEDDING_MODEL`, `DOCUMIND_EMBEDDING_DIM` | No | MiniLM, `384` | Changing the dimension requires a new migration. |
 | `DOCUMIND_CHUNK_SIZE`, `DOCUMIND_CHUNK_OVERLAP` | No | `1000`, `150` | Re-index after changing. |
@@ -429,8 +432,45 @@ Measured on 2026-10-12 with the **hashing embedder** and the **mock (extractive)
 How to read these honestly:
 - The dataset is tiny (3 short documents, 18 questions) and written by the same author as the system, so these numbers show the pipeline works; they are not a benchmark.
 - With only 9 chunks in total, perfect Recall@5 is easy. Larger corpora will score lower.
-- The demo provider's 4 false abstentions are vocabulary mismatches (e.g. "monthly reimbursement limit for internet costs" against "reimburses internet costs of up to 35 euros per month"). One answer cites a weakly related sentence first. A real LLM or sentence-transformer embeddings should behave differently, but **no evaluation with a real LLM or the Sentence Transformers model has been run yet**.
+- The demo provider's 4 false abstentions are vocabulary mismatches (e.g. "monthly reimbursement limit for internet costs" against "reimburses internet costs of up to 35 euros per month"). One answer cites a weakly related sentence first. The real-model run below answers all four.
 - Groundedness and relevance are word-overlap heuristics, not judgments of correctness.
+
+### Measured results (real models: all-MiniLM-L6-v2 + llama3.2:3b via Ollama, CPU)
+
+Measured on 2026-11-02 with Sentence Transformers `all-MiniLM-L6-v2` embeddings and `llama3.2:3b` served by Ollama 0.40.11 through the OpenAI-compatible provider. Same dataset and retrieval settings as above (hybrid, lexical reranker, top-k 5). Raw output: [docs/evaluation-results-ollama.json](docs/evaluation-results-ollama.json).
+
+Hardware: a laptop with an Intel Core i7-1255U (10 cores, 12 threads) and 32 GB RAM, Windows 11, **CPU only** (no GPU); torch 2.15.0+cpu, sentence-transformers 5.7.0.
+
+| Retrieval (14 answerable) | Value | | Answers | Value |
+|---|---|---|---|---|
+| Recall@5 | 1.000 | | Answered (of 14 answerable) | 14 |
+| MRR | 0.929 | | False abstention rate | 0.000 |
+| Median latency | 42.2 ms | | Correct abstention (4 unanswerable) | 1.000 |
+| p95 latency | 110.5 ms | | Citation validity | 1.000 |
+| | | | Citation correctness | 1.000 |
+| | | | Page accuracy | 1.000 |
+| | | | Groundedness (lexical) | 0.872 |
+| | | | Answer relevance (lexical) | 0.912 |
+| | | | Answer latency, median / p95 | 26.6 s / 35.1 s |
+| | | | Tokens in / out (reported by Ollama) | 18,861 / 618 |
+
+The reported numbers come from the third run with this setup. The first two runs exposed output-format problems in the 3B model that were fixed in code (with regression tests) before the next run:
+
+| Run | Citation validity | Correct abstention | What happened, and the fix |
+|---|---|---|---|
+| 1 | 0.000 | 0.750 | All 14 answers were correct in substance but carried no `[S1]` labels, so all were "unverified". One unanswerable question came back as `ANSWER: None` and counted as an answer. Fix: a concrete format example and a citation reminder in the prompt, parsing of label variants (`(S1)`, `[S1, S2]`, `[S1-S4]`), and placeholder answers treated as abstentions. |
+| 2 | 1.000 | 0.500 | Citations fixed, but two unanswerable questions got prose refusals such as "The inventor of the first solar cell is not mentioned in the passages [S1].", and one was even classified as supported. Fix: an explicit prompt rule, and one-sentence "the passages don't mention X" answers classified as abstentions. Factual negatives such as "X does not contain Y [S2]." are still answers. |
+| 3 | 1.000 | 1.000 | Reported above. |
+
+Run 1 also reported a retrieval p95 of 31.4 s. That was the embedding model loading inside the first timed query; the evaluation now loads it before timing.
+
+Comparing the two setups:
+- **Better with real models:** all 14 answerable questions are answered (demo: 10). The LLM handles the paraphrased questions that made the extractive demo abstain; for example, the internet-costs question is answered "35 euros per month [S1]". Citation correctness rises to 1.000 (demo: 0.950) and lexical answer relevance to 0.912 (demo: 0.827).
+- **The same:** Recall@5 is 1.000 in both, and both decline all 4 unanswerable questions. Only 2 of those 4 reach the model, though: one is stopped by the evidence gate and the prompt-injection attempt is refused before retrieval. So the model's own abstention behaviour rests on just 2 questions.
+- **Worse with real models:** MRR is 0.929 (demo: 0.964). Both setups rank the relevant chunk second for one solar question, and MiniLM also does so for the French-press question. Lexical groundedness is 0.872 (demo: 0.919), which is expected since the LLM rephrases instead of copying sentences; this metric penalizes paraphrase and does not show the answers are less faithful. Retrieval takes about 42 ms instead of 10 ms because the query is embedded with MiniLM on the CPU.
+- **Latency is the big cost:** a median of 26.6 s and a p95 of 35.1 s per question on this CPU, against milliseconds for the demo. Answers are short (618 output tokens over 16 model calls), and the time goes mostly to processing the ~1,200-token prompt. In a manual streaming check, a 23-token answer streamed in about 2 s once the first token arrived, but the first token took about 44 s (including reloading the model after it had been idle). Streaming therefore helps much less on a CPU than with a GPU or a hosted API.
+
+Caveats: the prompt and parser fixes were made while looking at this same 18-question set, so these numbers are optimistic. Latency varies between runs on a laptop (the median was 32.9 s in run 2), and a 3B model is far from the state of the art.
 
 ## Security and limitations
 
@@ -458,6 +498,8 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for more. Common issues:
 | `sentence-transformers is not installed` | Install `backend/requirements-ml.txt`, or set `DOCUMIND_EMBEDDING_PROVIDER=hashing`. |
 | Model download fails | The machine can't reach huggingface.co. Pre-download the model, or use `hashing`. |
 | Database tests are skipped | Set `DOCUMIND_TEST_DATABASE_URL` to a database with pgvector. |
+| Answers with a local model fail with `llm_provider_error` after about a minute | CPU inference is slow: raise `DOCUMIND_LLM_TIMEOUT_S` (e.g. `300`). |
+| `vite build` on Windows: "Cannot find native binding" (`@rolldown/binding-win32-x64-msvc`) | The lockfile was generated on Linux, so `npm ci` skips the Windows binding. Use Node 22, then `npm install --no-save @rolldown/binding-win32-x64-msvc@<version of node_modules/rolldown>`. |
 | Answers always say "insufficient evidence" in demo mode | The extractive demo matches words; rephrase using the document's terms, or configure a real LLM. |
 
 ## Screenshots
