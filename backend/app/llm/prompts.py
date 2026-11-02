@@ -35,6 +35,10 @@ Only use labels that appear in the supplied passages.
 - Keep evidence and interpretation separate. Reply in exactly this format:
 ANSWER: <the answer, every sentence cited>
 INFERENCE: <optional interpretation or connection you drew that is not stated verbatim; write "None." if there is none>
+
+Example of a correctly formatted reply (the content is illustrative only):
+ANSWER: The museum opens at 9 am on weekdays [S2]. Entry is free for children under 12 [S1][S3].
+INFERENCE: None.
 """
 
 STUDY_SYSTEM_PROMPT = """You create study material strictly from the document passages supplied \
@@ -133,7 +137,8 @@ def build_answer_messages(
         )
     content = (
         f"{history_text}Document passages:\n{rendered}\n{warning}\n"
-        f"Question: {question}\n\nAnswer using only the passages above, in the required format."
+        f"Question: {question}\n\nAnswer using only the passages above, in the required format. "
+        "End every sentence of the answer with the label of its passage in square brackets, e.g. [S1]."
     )
     return [{"role": "user", "content": content}]
 
@@ -146,21 +151,40 @@ def build_study_messages(task: str, title: str, sources: list[SourceRef]) -> lis
 
 
 _CITATION_RE = re.compile(r"\[(S\d{1,3})\]")
+# Label groups that small models write instead of "[S1][S2]": "[S1, S2]", "(S1)", "[Source S1]",
+# "[source: S1; S3]". Only groups made entirely of S-labels are rewritten.
+_LABEL_GROUP_RE = re.compile(r"[\[(]\s*(?:(?i:sources?)\s*:?\s*)?(S\d{1,3}(?:\s*(?:,|;|and|&)\s*S\d{1,3})*)\s*[\])]")
+
+
+_NO_ANSWER = {"", "none", "n/a", "no answer", "unknown", "not stated", "not mentioned"}
+
+
+def normalize_citations(text: str) -> str:
+    """Rewrite citation-label variants into the canonical ``[S1][S2]`` form."""
+
+    def canonical(match: re.Match) -> str:
+        labels = re.findall(r"S(\d{1,3})", match.group(1))
+        return "".join(f"[S{n}]" for n in labels)
+
+    return _LABEL_GROUP_RE.sub(canonical, text)
 
 
 def parse_answer(text: str) -> tuple[str, str | None, bool]:
     """Split model output into ``(answer, inference, insufficient)``."""
-    raw = text.strip()
+    raw = normalize_citations(text.strip())
     if not raw or raw.upper().startswith("INSUFFICIENT_EVIDENCE") or raw == "INSUFFICIENT_EVIDENCE":
         return "", None, True
     answer, inference = raw, None
-    match = re.search(r"ANSWER:\s*(.*?)(?:\n\s*INFERENCE:\s*(.*))?$", raw, re.DOTALL | re.IGNORECASE)
+    match = re.search(r"ANSWER:[ \t]*(.*?)(?:\n\s*INFERENCE:\s*(.*))?$", raw, re.DOTALL | re.IGNORECASE)
     if match:
         answer = match.group(1).strip()
         inference = (match.group(2) or "").strip() or None
     if inference and inference.rstrip(".").lower() in {"none", "n/a", "no inference"}:
         inference = None
     if "INSUFFICIENT_EVIDENCE" in answer and len(answer) < 60:
+        return "", None, True
+    # Small models sometimes signal "no answer" with a placeholder instead of the marker.
+    if _CITATION_RE.sub("", answer).strip(" .").lower() in _NO_ANSWER:
         return "", None, True
     return answer, inference, False
 

@@ -10,11 +10,13 @@ from app.core.logging import redact
 from app.llm.base import LLMRequest, SourceRef
 from app.llm.mock import INSUFFICIENT, MockProvider
 from app.llm.prompts import (
+    ANSWER_SYSTEM_PROMPT,
     build_answer_messages,
     extract_citation_labels,
     is_secret_request,
     looks_like_injection,
     neutralize,
+    normalize_citations,
     parse_answer,
     redact_secrets,
     render_sources,
@@ -95,6 +97,41 @@ def test_citation_parsing_and_stripping():
     text = "A [S1]. B [S7]. C [S1][S2]."
     assert extract_citation_labels(text) == ["S1", "S7", "S2"]
     assert strip_unknown_citations(text, {"S1", "S2"}) == "A [S1]. B . C [S1][S2]."
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("It is 600 euros [S1, S2].", "It is 600 euros [S1][S2]."),
+        ("It is 600 euros (S1).", "It is 600 euros [S1]."),
+        ("It is 600 euros [Source S3].", "It is 600 euros [S3]."),
+        ("It is 600 euros [sources: S1; S2 and S4].", "It is 600 euros [S1][S2][S4]."),
+        ("It is 600 euros [S1][S2].", "It is 600 euros [S1][S2]."),
+        ("Phone model (s21) and section (A1) stay.", "Phone model (s21) and section (A1) stay."),
+    ],
+)
+def test_citation_variants_are_normalized(raw, expected):
+    """llama3.2:3b and similar small models often write label variants instead of [S1][S2]."""
+    assert normalize_citations(raw) == expected
+
+
+def test_parse_answer_accepts_small_model_citation_variants():
+    ans, inf, insufficient = parse_answer("ANSWER: The stipend is 600 euros (S1, S2).\nINFERENCE: None")
+    assert ans == "The stipend is 600 euros [S1][S2]." and inf is None and not insufficient
+    assert extract_citation_labels(ans) == ["S1", "S2"]
+
+
+@pytest.mark.parametrize("answer", ["None", "None.", "N/A", "", "Not mentioned [S1]."])
+def test_placeholder_answers_count_as_abstention(answer):
+    """Regression: llama3.2:3b replied "ANSWER: None" to an unanswerable question."""
+    raw = f"ANSWER: {answer}\nINFERENCE: The passage does not mention a parental leave policy."
+    assert parse_answer(raw) == ("", None, True)
+
+
+def test_answer_prompt_shows_citation_example_and_reminder():
+    (msg,) = build_answer_messages("How much?", SOURCES, [])
+    assert "e.g. [S1]" in msg["content"].splitlines()[-1]
+    assert "ANSWER: The museum opens at 9 am on weekdays [S2]." in ANSWER_SYSTEM_PROMPT
 
 
 def test_redaction():

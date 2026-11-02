@@ -1,9 +1,13 @@
+import json
 import uuid
 
+import httpx
 import pytest
 
+from app.core.config import Settings
 from app.core.errors import NotFoundError
 from app.llm.base import LLMResponse, LLMUsage
+from app.llm.providers import OpenAICompatibleProvider
 from app.retrieval.engine import Retriever
 from app.services.conversations import ConversationService
 from app.services.qa import QAService
@@ -127,6 +131,23 @@ def test_answer_without_valid_citations_is_unverified(db_session, corpus):
     provider = FabricatingProvider("ANSWER: The stipend is generous [S99].\nINFERENCE: None.")
     result = QAService(db_session, provider=provider).answer("How much is the home office stipend?")
     assert result.evidence_status == "unverified" and result.citations == []
+
+
+def test_small_model_citation_variants_count_as_citations(db_session, corpus):
+    """Regression: llama3.2:3b via Ollama wrote "(S1)" / "[S1, S2]" and answers came back unverified."""
+
+    def handler(request: httpx.Request):
+        body = json.loads(request.content)
+        assert "e.g. [S1]" in body["messages"][-1]["content"]
+        text = "ANSWER: The home office stipend is 600 euros (S1).\nINFERENCE: None"
+        return httpx.Response(200, json={"model": "llama3.2:3b", "choices": [{"message": {"content": text}}]})
+
+    settings = Settings(llm_provider="openai", llm_model="llama3.2:3b", llm_base_url="http://ollama.test/v1")
+    provider = OpenAICompatibleProvider(settings, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    result = QAService(db_session, provider=provider).answer("How much is the home office stipend?")
+    assert result.evidence_status == "supported"
+    assert result.answer == "The home office stipend is 600 euros [S1]."
+    assert [c["page_number"] for c in result.citations] == [2]
 
 
 def test_prompt_injection_inside_document_is_neutralized(db_session, ingest):
