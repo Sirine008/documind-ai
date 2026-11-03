@@ -929,6 +929,12 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  container-type: inline-size;
+}
+
+/* This container is the only vertical scroller; its children keep their full height. */
+.evaluation-body > * {
+  flex-shrink: 0;
 }
 
 .metric-groups {
@@ -963,8 +969,26 @@ textarea {
   font-weight: 600;
 }
 
+/* No overflow here: a scroll container would capture the sticky header. The fixed
+   table layout keeps the table within the column, so nothing needs to scroll sideways. */
 .table-scroll {
-  overflow-x: auto;
+  overflow: visible;
+}
+
+.results-table {
+  table-layout: fixed;
+}
+
+.col-question {
+  width: 35%;
+}
+
+.col-retrieved {
+  width: 6.5rem;
+}
+
+.col-outcome {
+  width: 7.5rem;
 }
 
 .results-table th,
@@ -974,16 +998,35 @@ textarea {
   text-align: left;
   vertical-align: top;
   font-size: var(--step--1);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .results-table th {
+  /* Stick to the scroller's edge, covering its top padding so rows don't show above. */
+  position: sticky;
+  top: calc(-1 * var(--space-5));
+  z-index: 1;
+  padding-top: calc(var(--space-5) + var(--space-2));
+  background: var(--paper);
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--rule-strong);
   color: var(--ink-soft);
   font-weight: 600;
 }
 
+.nowrap {
+  white-space: nowrap;
+}
+
+.outcome-expected {
+  display: block;
+  color: var(--ink-faint);
+}
+
 .answer-cell {
-  max-width: 28rem;
   color: var(--ink-soft);
+  white-space: pre-line;
 }
 
 .outcome-ok {
@@ -992,6 +1035,56 @@ textarea {
 
 .outcome-bad {
   color: var(--caution);
+}
+
+/* Narrow column (phones, or the middle pane on small laptops): one card per question. */
+@container (max-width: 40rem) {
+  .results-table,
+  .results-table tbody,
+  .results-table tr,
+  .results-table td {
+    display: block;
+  }
+
+  .results-table colgroup,
+  .results-table thead {
+    display: none;
+  }
+
+  .results-table tr {
+    padding: var(--space-3) 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .results-table td {
+    position: relative;
+    padding: var(--space-1) 0 var(--space-1) 6.25rem;
+    border: 0;
+  }
+
+  .results-table td::before {
+    content: attr(data-label);
+    position: absolute;
+    left: 0;
+    width: 5.5rem;
+    color: var(--ink-faint);
+    font-weight: 600;
+  }
+
+  .results-table .question-cell {
+    padding: 0 0 var(--space-2);
+    color: var(--ink);
+    font-size: var(--step-0);
+    font-weight: 600;
+  }
+
+  .results-table .question-cell::before {
+    content: none;
+  }
+
+  .outcome-expected {
+    display: inline;
+  }
 }
 
 /* ---------- Toasts ---------- */

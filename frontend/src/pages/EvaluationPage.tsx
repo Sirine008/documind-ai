@@ -145,6 +145,12 @@ export function EvaluationPage({ notify }: Props) {
             <h2>Per question</h2>
             <div className="table-scroll">
               <table className="results-table">
+                <colgroup>
+                  <col className="col-question" />
+                  <col className="col-retrieved" />
+                  <col className="col-outcome" />
+                  <col />
+                </colgroup>
                 <thead>
                   <tr>
                     <th scope="col">Question</th>
@@ -159,12 +165,23 @@ export function EvaluationPage({ notify }: Props) {
                     const ok = r.answerable ? !r.abstained : r.abstained;
                     return (
                       <tr key={r.id}>
-                        <td>{r.question}</td>
-                        <td>{r.answerable ? (r.recall_at_k ? `Hit, rank ${Math.round(1 / (r.reciprocal_rank || 1))}` : "Miss") : "No answer expected"}</td>
-                        <td className={ok ? "outcome-ok" : "outcome-bad"}>
-                          {r.abstained ? "Abstained" : "Answered"} (expected to {expected})
+                        <td className="question-cell">{r.question}</td>
+                        <td data-label="Retrieved">
+                          {r.answerable ? (
+                            <span className="nowrap">
+                              {r.recall_at_k ? `Hit, rank ${Math.round(1 / (r.reciprocal_rank || 1))}` : "Miss"}
+                            </span>
+                          ) : (
+                            "No answer expected"
+                          )}
                         </td>
-                        <td className="answer-cell">{r.answer}</td>
+                        <td data-label="Outcome" className={ok ? "outcome-ok" : "outcome-bad"}>
+                          <span className="nowrap">{r.abstained ? "Abstained" : "Answered"}</span>{" "}
+                          <span className="outcome-expected">(expected to {expected})</span>
+                        </td>
+                        <td data-label="Answer" className="answer-cell">
+                          {r.answer}
+                        </td>
                       </tr>
                     );
                   })}
